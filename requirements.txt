@@ -1,4 +1,3 @@
-telethon
-aiohttp
-cryptography
+pyrogram
 tgcrypto
+aiohttp

@@ -1,8 +1,7 @@
 import os
 import asyncio
 from aiohttp import web
-from telethon import TelegramClient, events
-from telethon.tl.types import PeerChannel, PeerUser, PeerChat
+from pyrogram import Client, filters
 
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
@@ -10,7 +9,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("stream_direct_dc_session", API_ID, API_HASH)
+bot = Client("pyrogram_stream_engine", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -19,24 +18,18 @@ async def stream_handler(request):
         chat_id = int(request.match_info["chat_id"])
         message_id = int(request.match_info["message_id"])
 
-        # Direct Entity Lookup to resolve Location/DC Error
-        try:
-            peer = await bot.get_entity(chat_id)
-        except Exception:
-            peer = chat_id
-
-        message = await bot.get_messages(peer, ids=message_id)
+        message = await bot.get_messages(chat_id, message_ids=message_id)
         if not message or not message.media:
-            return web.Response(text="Media unavailable or deleted", status=404)
+            return web.Response(text="Media not found", status=404)
 
-        media = message.video or message.document
+        media = getattr(message, message.media.value, None)
         if not media:
-            return web.Response(text="No streamable video media found", status=400)
+            return web.Response(text="Invalid Media", status=400)
 
-        file_size = media.size
+        file_size = media.file_size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Byte Range Handling for Player Seeking
+        # Range Header processing for smooth streaming
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -62,36 +55,30 @@ async def stream_handler(request):
 
         await response.prepare(request)
 
-        # Chunk Stream
-        async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
-            if len(chunk) > (end - start + 1):
-                chunk = chunk[: end - start + 1]
+        # Pyrogram handles DC location auto-routing
+        async for chunk in bot.stream_media(message, offset=start // (1024 * 1024)):
             await response.write(chunk)
-            start += len(chunk)
-            if start > end:
-                break
 
         return response
 
     except Exception as e:
-        return web.Response(text=f"Location Stream Error: {str(e)}", status=500)
+        return web.Response(text=f"Stream Error: {str(e)}", status=500)
 
 
-@bot.on(events.NewMessage)
-async def handle_video(event):
-    if event.video or (event.document and event.document.mime_type and event.document.mime_type.startswith("video/")):
-        chat_id = event.chat_id
-        msg_id = event.message.id
+@bot.on_message(filters.video | filters.document)
+async def handle_video(client, message):
+    chat_id = message.chat.id
+    msg_id = message.id
 
-        base_url = SERVER_URL if SERVER_URL else f"http://{event.host}"
-        stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
+    base_url = SERVER_URL if SERVER_URL else "http://localhost:8080"
+    stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
 
-        reply_text = f"🚀 **Direct Stream URL:**\n`{stream_url}`"
-        await event.reply(reply_text)
+    reply_text = f"🚀 **Pyrogram Direct Stream Link:**\n`{stream_url}`"
+    await message.reply_text(reply_text)
 
 
 async def main():
-    await bot.start(bot_token=BOT_TOKEN)
+    await bot.start()
     app = web.Application()
     app.add_routes(routes)
     runner = web.AppRunner(app)
@@ -101,4 +88,6 @@ async def main():
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    

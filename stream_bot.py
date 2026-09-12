@@ -2,39 +2,38 @@ import os
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events
+from telethon.tl.types import DocumentAttributeVideo
 
 # --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-
-# Public URL of your server (e.g., https://your-app.koyeb.app)
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
-
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("fast_stream_bot", API_ID, API_HASH)
-
+bot = TelegramClient("fast_stream_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
-# --- DIRECT STREAM PROXY HANDLER ---
 @routes.get("/stream/{chat_id}/{message_id}")
 async def stream_handler(request):
     try:
         chat_id = int(request.match_info["chat_id"])
         message_id = int(request.match_info["message_id"])
 
+        # Fetch message directly with entity resolution
         message = await bot.get_messages(chat_id, ids=message_id)
-        if not message or not (message.video or message.document):
-            return web.Response(text="Media not found", status=404)
+        if not message or not message.media:
+            return web.Response(text="Media not found or deleted", status=404)
 
         media = message.video or message.document
-        file_size = media.size
-        mime_type = media.mime_type or "video/mp4"
+        if not media:
+            return web.Response(text="No streamable media in message", status=400)
 
-        # HTTP Range Headers handling for video seeking/buffering
+        file_size = media.size
+        mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
+
+        # Handle HTTP Range Headers for video Seeking & Buffering
         range_header = request.headers.get("Range")
-        
         start = 0
         end = file_size - 1
 
@@ -61,7 +60,7 @@ async def stream_handler(request):
 
         await response.prepare(request)
 
-        # Direct streaming chunks from Telegram to client
+        # Direct chunk streaming from Telegram Data Center
         async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
             if len(chunk) > (end - start + 1):
                 chunk = chunk[: end - start + 1]
@@ -78,17 +77,17 @@ async def stream_handler(request):
 
 @bot.on(events.NewMessage)
 async def handle_video(event):
-    if event.video or (event.document and event.document.mime_type.startswith("video/")):
+    if event.video or (event.document and event.document.mime_type and event.document.mime_type.startswith("video/")):
         chat_id = event.chat_id
         msg_id = event.message.id
 
-        base_url = SERVER_URL if SERVER_URL else f"http://{request.host}"
+        base_url = SERVER_URL if SERVER_URL else f"http://{event.host}"
         stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
 
         reply_text = (
-            "🚀 **Direct Fast Stream Link Ready!**\n\n"
-            f"🔗 **Stream URL (Web / App / Player):**\n`{stream_url}`\n\n"
-            "✨ *Copy this URL and give it to your App Developer!*"
+            "🚀 **Direct Fast Stream Link Generated!**\n\n"
+            f"🔗 **Stream URL:**\n`{stream_url}`\n\n"
+            "✨ *Is link ko direct VLC, Chrome, ya Web Player me chala ke test karein.*"
         )
         await event.reply(reply_text)
 
@@ -109,3 +108,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    

@@ -1,0 +1,111 @@
+import os
+import asyncio
+from aiohttp import web
+from telethon import TelegramClient, events
+
+# --- CONFIGURATION ---
+API_ID = int(os.environ.get("API_ID", "0").strip())
+API_HASH = os.environ.get("API_HASH", "").strip()
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+
+# Public URL of your server (e.g., https://your-app.koyeb.app)
+SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
+
+PORT = int(os.environ.get("PORT", 8080))
+
+bot = TelegramClient("fast_stream_bot", API_ID, API_HASH)
+
+routes = web.RouteTableDef()
+
+# --- DIRECT STREAM PROXY HANDLER ---
+@routes.get("/stream/{chat_id}/{message_id}")
+async def stream_handler(request):
+    try:
+        chat_id = int(request.match_info["chat_id"])
+        message_id = int(request.match_info["message_id"])
+
+        message = await bot.get_messages(chat_id, ids=message_id)
+        if not message or not (message.video or message.document):
+            return web.Response(text="Media not found", status=404)
+
+        media = message.video or message.document
+        file_size = media.size
+        mime_type = media.mime_type or "video/mp4"
+
+        # HTTP Range Headers handling for video seeking/buffering
+        range_header = request.headers.get("Range")
+        
+        start = 0
+        end = file_size - 1
+
+        if range_header:
+            bytes_range = range_header.replace("bytes=", "").split("-")
+            start = int(bytes_range[0])
+            if len(bytes_range) > 1 and bytes_range[1]:
+                end = int(bytes_range[1])
+
+        content_length = (end - start) + 1
+
+        response = web.StreamResponse(
+            status=206 if range_header else 200,
+            headers={
+                "Content-Type": mime_type,
+                "Content-Length": str(content_length),
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
+        await response.prepare(request)
+
+        # Direct streaming chunks from Telegram to client
+        async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
+            if len(chunk) > (end - start + 1):
+                chunk = chunk[: end - start + 1]
+            await response.write(chunk)
+            start += len(chunk)
+            if start > end:
+                break
+
+        return response
+
+    except Exception as e:
+        return web.Response(text=f"Streaming Error: {str(e)}", status=500)
+
+
+@bot.on(events.NewMessage)
+async def handle_video(event):
+    if event.video or (event.document and event.document.mime_type.startswith("video/")):
+        chat_id = event.chat_id
+        msg_id = event.message.id
+
+        base_url = SERVER_URL if SERVER_URL else f"http://{request.host}"
+        stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
+
+        reply_text = (
+            "🚀 **Direct Fast Stream Link Ready!**\n\n"
+            f"🔗 **Stream URL (Web / App / Player):**\n`{stream_url}`\n\n"
+            "✨ *Copy this URL and give it to your App Developer!*"
+        )
+        await event.reply(reply_text)
+
+
+async def main():
+    await bot.start(bot_token=BOT_TOKEN)
+    
+    app = web.Application()
+    app.add_routes(routes)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    
+    print(f"🤖 Direct Stream Engine running on port {PORT}!")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())

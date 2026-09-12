@@ -1,7 +1,7 @@
 import os
 import asyncio
 from aiohttp import web
-from pyrogram import Client, filters
+from hydrogram import Client, filters
 
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
@@ -9,7 +9,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = Client("pyrogram_stream_engine", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client("stream_engine", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -29,7 +29,6 @@ async def stream_handler(request):
         file_size = media.file_size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Range Header processing for smooth streaming
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -55,7 +54,6 @@ async def stream_handler(request):
 
         await response.prepare(request)
 
-        # Pyrogram handles DC location auto-routing
         async for chunk in bot.stream_media(message, offset=start // (1024 * 1024)):
             await response.write(chunk)
 
@@ -73,7 +71,7 @@ async def handle_video(client, message):
     base_url = SERVER_URL if SERVER_URL else "http://localhost:8080"
     stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
 
-    reply_text = f"🚀 **Pyrogram Direct Stream Link:**\n`{stream_url}`"
+    reply_text = f"🚀 **Direct Stream Link:**\n`{stream_url}`"
     await message.reply_text(reply_text)
 
 
@@ -85,9 +83,8 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
+    print(f"🤖 Stream Engine running on port {PORT}!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-    
+    asyncio.run(main())

@@ -9,7 +9,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = Client("stream_engine", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client(
+    "stream_engine",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True
+)
+
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -83,8 +90,10 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🤖 Stream Engine running on port {PORT}!")
+    print(f"🤖 Engine Online on Port {PORT}")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(main())

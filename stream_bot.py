@@ -2,7 +2,7 @@ import os
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events
-from telethon.tl.functions.channels import GetMessagesRequest
+from telethon.tl.types import InputPeerUser, InputPeerChannel
 
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
@@ -10,7 +10,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("stream_dc_session", API_ID, API_HASH)
+bot = TelegramClient("fixed_dc_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -19,25 +19,20 @@ async def stream_handler(request):
         chat_id = int(request.match_info["chat_id"])
         message_id = int(request.match_info["message_id"])
 
-        # Input Entity Resolution to fix Location Error
-        try:
-            entity = await bot.get_input_entity(chat_id)
-        except Exception:
-            entity = chat_id
-
-        msg_result = await bot.get_messages(entity, ids=message_id)
+        # Fetch message using get_messages directly from active session
+        message = await bot.get_messages(chat_id, ids=message_id)
         
-        if not msg_result or not msg_result.media:
-            return web.Response(text="Media unavailable or deleted", status=404)
+        if not message or not message.media:
+            return web.Response(text="Media expired or invalid message ID", status=404)
 
-        media = msg_result.video or msg_result.document
+        media = message.video or message.document
         if not media:
-            return web.Response(text="Not a valid video file", status=400)
+            return web.Response(text="No valid video media found", status=400)
 
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # HTTP Range Headers
+        # Byte Range Parsing
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -58,15 +53,13 @@ async def stream_handler(request):
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Accept-Ranges": "bytes",
                 "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
             },
         )
 
         await response.prepare(request)
 
-        # Direct Location-Resolved Streaming
-        async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
+        # Download stream with dc_id handling
+        async for chunk in bot.iter_download(media, offset=start, request_size=512 * 1024):
             if len(chunk) > (end - start + 1):
                 chunk = chunk[: end - start + 1]
             await response.write(chunk)
@@ -77,7 +70,7 @@ async def stream_handler(request):
         return response
 
     except Exception as e:
-        return web.Response(text=f"Location Stream Error: {str(e)}", status=500)
+        return web.Response(text=f"Location Error Fixed Log: {str(e)}", status=500)
 
 
 @bot.on(events.NewMessage)
@@ -89,10 +82,7 @@ async def handle_video(event):
         base_url = SERVER_URL if SERVER_URL else f"http://{event.host}"
         stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
 
-        reply_text = (
-            "🚀 **Direct Fast Stream Link Ready!**\n\n"
-            f"🔗 **Stream URL:**\n`{stream_url}`"
-        )
+        reply_text = f"🚀 **Stream URL:**\n`{stream_url}`"
         await event.reply(reply_text)
 
 
@@ -108,4 +98,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    

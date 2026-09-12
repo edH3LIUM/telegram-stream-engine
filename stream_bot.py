@@ -2,16 +2,15 @@ import os
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events
-from telethon.tl.types import DocumentAttributeVideo
+from telethon.tl.functions.channels import GetMessagesRequest
 
-# --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("fast_stream_session", API_ID, API_HASH)
+bot = TelegramClient("stream_dc_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -20,19 +19,25 @@ async def stream_handler(request):
         chat_id = int(request.match_info["chat_id"])
         message_id = int(request.match_info["message_id"])
 
-        # Fetch message directly with entity resolution
-        message = await bot.get_messages(chat_id, ids=message_id)
-        if not message or not message.media:
-            return web.Response(text="Media not found or deleted", status=404)
+        # Input Entity Resolution to fix Location Error
+        try:
+            entity = await bot.get_input_entity(chat_id)
+        except Exception:
+            entity = chat_id
 
-        media = message.video or message.document
+        msg_result = await bot.get_messages(entity, ids=message_id)
+        
+        if not msg_result or not msg_result.media:
+            return web.Response(text="Media unavailable or deleted", status=404)
+
+        media = msg_result.video or msg_result.document
         if not media:
-            return web.Response(text="No streamable media in message", status=400)
+            return web.Response(text="Not a valid video file", status=400)
 
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Handle HTTP Range Headers for video Seeking & Buffering
+        # HTTP Range Headers
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -60,7 +65,7 @@ async def stream_handler(request):
 
         await response.prepare(request)
 
-        # Direct chunk streaming from Telegram Data Center
+        # Direct Location-Resolved Streaming
         async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
             if len(chunk) > (end - start + 1):
                 chunk = chunk[: end - start + 1]
@@ -72,7 +77,7 @@ async def stream_handler(request):
         return response
 
     except Exception as e:
-        return web.Response(text=f"Streaming Error: {str(e)}", status=500)
+        return web.Response(text=f"Location Stream Error: {str(e)}", status=500)
 
 
 @bot.on(events.NewMessage)
@@ -85,25 +90,20 @@ async def handle_video(event):
         stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
 
         reply_text = (
-            "🚀 **Direct Fast Stream Link Generated!**\n\n"
-            f"🔗 **Stream URL:**\n`{stream_url}`\n\n"
-            "✨ *Is link ko direct VLC, Chrome, ya Web Player me chala ke test karein.*"
+            "🚀 **Direct Fast Stream Link Ready!**\n\n"
+            f"🔗 **Stream URL:**\n`{stream_url}`"
         )
         await event.reply(reply_text)
 
 
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
-    
     app = web.Application()
     app.add_routes(routes)
-    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    
-    print(f"🤖 Direct Stream Engine running on port {PORT}!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@ import os
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events
-from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
@@ -10,7 +9,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_engine_session", API_ID, API_HASH)
+bot = TelegramClient("vlc_clean_engine", API_ID, API_HASH)
 routes = web.RouteTableDef()
 MEDIA_CACHE = {}
 
@@ -23,33 +22,26 @@ async def stream_handler(request):
         cache_key = f"{raw_chat_id}_{message_id}"
         message = MEDIA_CACHE.get(cache_key)
 
+        # Fallback to fetch message directly from Telegram API
         if not message:
-            if raw_chat_id.startswith("-100"):
-                peer = PeerChannel(int(raw_chat_id[4:]))
-            elif raw_chat_id.startswith("-"):
-                peer = PeerChat(int(raw_chat_id[1:]))
-            else:
-                peer = PeerUser(int(raw_chat_id))
-
             try:
-                message = await bot.get_messages(peer, ids=message_id)
-            except Exception:
-                try:
-                    entity = await bot.get_entity(int(raw_chat_id))
-                    message = await bot.get_messages(entity, ids=message_id)
-                except Exception as err:
-                    return web.Response(text=f"Fetch Error: {str(err)}", status=404)
+                chat_id = int(raw_chat_id)
+                entity = await bot.get_entity(chat_id)
+                message = await bot.get_messages(entity, ids=message_id)
+            except Exception as fetch_err:
+                return web.Response(text=f"Telegram Fetch Error: {str(fetch_err)}", status=404)
 
         if not message or not message.media:
             return web.Response(text="Media expired or invalid message ID", status=404)
 
-        media = message.video or message.document
+        media = getattr(message, "video", None) or getattr(message, "document", None)
         if not media:
             return web.Response(text="No video stream found", status=400)
 
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
+        # Partial Streaming (Range Header Support) for Seeking
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -97,6 +89,7 @@ async def handle_video(event):
         chat_id = event.chat_id
         msg_id = event.message.id
 
+        # Cache media message in RAM
         cache_key = f"{chat_id}_{msg_id}"
         MEDIA_CACHE[cache_key] = event.message
 

@@ -9,11 +9,21 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_hash_cached_session", API_ID, API_HASH)
+bot = TelegramClient("vlc_hydrated_engine", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
-# Global memory cache to store active media access hashes
+# Global memory cache to retain message entities across requests
 MEDIA_CACHE = {}
+
+async def resolve_peer_entity(chat_id):
+    try:
+        return await bot.get_entity(chat_id)
+    except Exception:
+        # Pre-load dialogs to force-hydrate private channel access hashes
+        async for dialog in bot.iter_dialogs(limit=100):
+            if dialog.id == chat_id:
+                return dialog.entity
+        return chat_id
 
 @routes.get("/stream/{chat_id}/{message_id}")
 async def stream_handler(request):
@@ -21,29 +31,25 @@ async def stream_handler(request):
         raw_chat_id = request.match_info["chat_id"].strip()
         message_id = int(request.match_info["message_id"])
 
-        cache_key = f"{raw_chat_id}_{message_id}"
+        chat_id = int(raw_chat_id)
+        cache_key = f"{chat_id}_{message_id}"
+
         message = MEDIA_CACHE.get(cache_key)
 
-        # Fallback if container restarted or message not in memory cache
         if not message:
-            try:
-                chat_id = int(raw_chat_id)
-                entity = await bot.get_entity(chat_id)
-                message = await bot.get_messages(entity, ids=message_id)
-            except Exception as peer_err:
-                return web.Response(text=f"Access Hash Fetch Error: {str(peer_err)}", status=403)
+            entity = await resolve_peer_entity(chat_id)
+            message = await bot.get_messages(entity, ids=message_id)
 
         if not message or not message.media:
             return web.Response(text="Media expired or invalid message ID", status=404)
 
         media = message.video or message.document
         if not media:
-            return web.Response(text="No streamable video media found", status=400)
+            return web.Response(text="No video stream found", status=400)
 
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Range Header Handling for VLC Seeking
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -82,7 +88,7 @@ async def stream_handler(request):
         return response
 
     except Exception as e:
-        return web.Response(text=f"Streaming Engine Error: {str(e)}", status=500)
+        return web.Response(text=f"Streaming Error: {str(e)}", status=500)
 
 
 @bot.on(events.NewMessage)
@@ -91,7 +97,6 @@ async def handle_video(event):
         chat_id = event.chat_id
         msg_id = event.message.id
 
-        # Cache media message in-memory for instant hash resolution
         cache_key = f"{chat_id}_{msg_id}"
         MEDIA_CACHE[cache_key] = event.message
 
@@ -104,6 +109,12 @@ async def handle_video(event):
 
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
+    
+    # Warm up channel dialog cache at engine start
+    print("Hydrating Telegram Channel Dialogs...")
+    async for _ in bot.iter_dialogs(limit=50):
+        pass
+        
     app = web.Application()
     app.add_routes(routes)
     runner = web.AppRunner(app)

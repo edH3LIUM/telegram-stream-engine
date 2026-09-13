@@ -10,9 +10,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_clean_runtime_session", API_ID, API_HASH)
+bot = TelegramClient("vlc_engine_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
-
 MEDIA_CACHE = {}
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -112,12 +111,16 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     app = web.Application()
     app.add_routes(routes)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"Engine Live on Port {PORT}")
-    await asyncio.Event().wait()
+    
+    print(f"Server Running on Port {PORT}")
+    
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())

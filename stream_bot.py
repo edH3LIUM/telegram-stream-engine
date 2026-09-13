@@ -10,7 +10,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_clean_bot_engine", API_ID, API_HASH)
+bot = TelegramClient("vlc_clean_runtime_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
 MEDIA_CACHE = {}
@@ -25,7 +25,6 @@ async def stream_handler(request):
         message = MEDIA_CACHE.get(cache_key)
 
         if not message:
-            # Parse Chat/Channel ID for Telethon Bot API
             if raw_chat_id.startswith("-100"):
                 peer = PeerChannel(int(raw_chat_id[4:]))
             elif raw_chat_id.startswith("-"):
@@ -52,7 +51,6 @@ async def stream_handler(request):
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Byte Range Handling for VLC Seeking
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -100,7 +98,6 @@ async def handle_video(event):
         chat_id = event.chat_id
         msg_id = event.message.id
 
-        # Retain media reference in RAM cache
         cache_key = f"{chat_id}_{msg_id}"
         MEDIA_CACHE[cache_key] = event.message
 

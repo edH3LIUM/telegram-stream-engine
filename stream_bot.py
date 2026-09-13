@@ -9,7 +9,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_fix_session", API_ID, API_HASH)
+bot = TelegramClient("vlc_final_channel_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -18,13 +18,21 @@ async def stream_handler(request):
         raw_chat_id = request.match_info["chat_id"]
         message_id = int(request.match_info["message_id"])
 
-        try:
+        # Parse Channel/Chat ID correctly for Telethon
+        if raw_chat_id.startswith("-100"):
             chat_id = int(raw_chat_id)
-        except ValueError:
-            chat_id = raw_chat_id
+        elif raw_chat_id.startswith("-"):
+            chat_id = int(raw_chat_id)
+        else:
+            chat_id = int(raw_chat_id)
 
-        # Get exact message
-        message = await bot.get_messages(chat_id, ids=message_id)
+        # Get target peer entity dynamically
+        try:
+            peer = await bot.get_entity(chat_id)
+        except Exception:
+            peer = chat_id
+
+        message = await bot.get_messages(peer, ids=message_id)
         
         if not message or not message.media:
             return web.Response(text="Media expired or message deleted", status=404)
@@ -36,7 +44,7 @@ async def stream_handler(request):
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Byte-range handling for VLC
+        # Byte-range handling for VLC / External Players
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -64,7 +72,7 @@ async def stream_handler(request):
 
         await response.prepare(request)
 
-        # Download stream chunks
+        # Stream file chunks
         async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
             if len(chunk) > (end - start + 1):
                 chunk = chunk[: end - start + 1]
@@ -105,4 +113,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    

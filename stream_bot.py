@@ -9,18 +9,27 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("clean_stream_session", API_ID, API_HASH)
+bot = TelegramClient("vlc_stream_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
 async def stream_handler(request):
     try:
-        chat_id = int(request.match_info["chat_id"])
+        raw_chat_id = request.match_info["chat_id"]
         message_id = int(request.match_info["message_id"])
 
-        message = await bot.get_messages(chat_id, ids=message_id)
+        chat_id = int(raw_chat_id)
+
+        # Resolve entity to prevent peer/location errors in VLC
+        try:
+            entity = await bot.get_entity(chat_id)
+        except Exception:
+            entity = chat_id
+
+        message = await bot.get_messages(entity, ids=message_id)
+        
         if not message or not message.media:
-            return web.Response(text="Media unavailable", status=404)
+            return web.Response(text="Media expired or message deleted", status=404)
 
         media = message.video or message.document
         if not media:
@@ -49,12 +58,13 @@ async def stream_handler(request):
                 "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Accept-Ranges": "bytes",
                 "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
             },
         )
 
         await response.prepare(request)
 
-        async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
+        async for chunk in bot.iter_download(media, offset=start, request_size=512 * 1024):
             if len(chunk) > (end - start + 1):
                 chunk = chunk[: end - start + 1]
             await response.write(chunk)
@@ -65,7 +75,7 @@ async def stream_handler(request):
         return response
 
     except Exception as e:
-        return web.Response(text=f"Stream Error: {str(e)}", status=500)
+        return web.Response(text=f"VLC Playback Error: {str(e)}", status=500)
 
 
 @bot.on(events.NewMessage)
@@ -77,7 +87,7 @@ async def handle_video(event):
         base_url = SERVER_URL if SERVER_URL else f"http://{event.host}"
         stream_url = f"{base_url}/stream/{chat_id}/{msg_id}"
 
-        reply_text = f"🚀 **Stream URL:**\n`{stream_url}`"
+        reply_text = f"🚀 **Stream Link:**\n`{stream_url}`"
         await event.reply(reply_text)
 
 
@@ -89,7 +99,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print(f"🤖 Stream Engine running on port {PORT}")
+    print(f"Server Running on Port {PORT}")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import os
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events
+from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
@@ -9,21 +10,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_hydrated_engine", API_ID, API_HASH)
+bot = TelegramClient("vlc_clean_bot_engine", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
-# Global memory cache to retain message entities across requests
 MEDIA_CACHE = {}
-
-async def resolve_peer_entity(chat_id):
-    try:
-        return await bot.get_entity(chat_id)
-    except Exception:
-        # Pre-load dialogs to force-hydrate private channel access hashes
-        async for dialog in bot.iter_dialogs(limit=100):
-            if dialog.id == chat_id:
-                return dialog.entity
-        return chat_id
 
 @routes.get("/stream/{chat_id}/{message_id}")
 async def stream_handler(request):
@@ -31,14 +21,26 @@ async def stream_handler(request):
         raw_chat_id = request.match_info["chat_id"].strip()
         message_id = int(request.match_info["message_id"])
 
-        chat_id = int(raw_chat_id)
-        cache_key = f"{chat_id}_{message_id}"
-
+        cache_key = f"{raw_chat_id}_{message_id}"
         message = MEDIA_CACHE.get(cache_key)
 
         if not message:
-            entity = await resolve_peer_entity(chat_id)
-            message = await bot.get_messages(entity, ids=message_id)
+            # Parse Chat/Channel ID for Telethon Bot API
+            if raw_chat_id.startswith("-100"):
+                peer = PeerChannel(int(raw_chat_id[4:]))
+            elif raw_chat_id.startswith("-"):
+                peer = PeerChat(int(raw_chat_id[1:]))
+            else:
+                peer = PeerUser(int(raw_chat_id))
+
+            try:
+                message = await bot.get_messages(peer, ids=message_id)
+            except Exception:
+                try:
+                    entity = await bot.get_entity(int(raw_chat_id))
+                    message = await bot.get_messages(entity, ids=message_id)
+                except Exception as err:
+                    return web.Response(text=f"Fetch Error: {str(err)}", status=404)
 
         if not message or not message.media:
             return web.Response(text="Media expired or invalid message ID", status=404)
@@ -50,6 +52,7 @@ async def stream_handler(request):
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
+        # Byte Range Handling for VLC Seeking
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -97,6 +100,7 @@ async def handle_video(event):
         chat_id = event.chat_id
         msg_id = event.message.id
 
+        # Retain media reference in RAM cache
         cache_key = f"{chat_id}_{msg_id}"
         MEDIA_CACHE[cache_key] = event.message
 
@@ -109,12 +113,6 @@ async def handle_video(event):
 
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
-    
-    # Warm up channel dialog cache at engine start
-    print("Hydrating Telegram Channel Dialogs...")
-    async for _ in bot.iter_dialogs(limit=50):
-        pass
-        
     app = web.Application()
     app.add_routes(routes)
     runner = web.AppRunner(app)

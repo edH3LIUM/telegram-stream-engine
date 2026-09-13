@@ -2,6 +2,7 @@ import os
 import asyncio
 from aiohttp import web
 from telethon import TelegramClient, events
+from telethon.tl.functions.messages import GetMessagesRequest
 
 API_ID = int(os.environ.get("API_ID", "0").strip())
 API_HASH = os.environ.get("API_HASH", "").strip()
@@ -9,7 +10,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip('/')
 PORT = int(os.environ.get("PORT", 8080))
 
-bot = TelegramClient("vlc_final_channel_session", API_ID, API_HASH)
+bot = TelegramClient("vlc_stream_hydrated_session", API_ID, API_HASH)
 routes = web.RouteTableDef()
 
 @routes.get("/stream/{chat_id}/{message_id}")
@@ -18,33 +19,28 @@ async def stream_handler(request):
         raw_chat_id = request.match_info["chat_id"]
         message_id = int(request.match_info["message_id"])
 
-        # Parse Channel/Chat ID correctly for Telethon
-        if raw_chat_id.startswith("-100"):
-            chat_id = int(raw_chat_id)
-        elif raw_chat_id.startswith("-"):
-            chat_id = int(raw_chat_id)
-        else:
-            chat_id = int(raw_chat_id)
+        chat_id = int(raw_chat_id)
 
-        # Get target peer entity dynamically
+        # Force fetch dialogs to hydrate peer cache and resolve hash access issues
         try:
-            peer = await bot.get_entity(chat_id)
+            entity = await bot.get_input_entity(chat_id)
         except Exception:
-            peer = chat_id
+            await bot.get_dialogs(limit=100)
+            entity = await bot.get_input_entity(chat_id)
 
-        message = await bot.get_messages(peer, ids=message_id)
+        message = await bot.get_messages(entity, ids=message_id)
         
         if not message or not message.media:
-            return web.Response(text="Media expired or message deleted", status=404)
+            return web.Response(text="Media expired or invalid message ID", status=404)
 
         media = message.video or message.document
         if not media:
-            return web.Response(text="Not a valid video file", status=400)
+            return web.Response(text="No streamable video media found", status=400)
 
         file_size = media.size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
 
-        # Byte-range handling for VLC / External Players
+        # Range Header Handling
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -72,8 +68,8 @@ async def stream_handler(request):
 
         await response.prepare(request)
 
-        # Stream file chunks
-        async for chunk in bot.iter_download(media, offset=start, request_size=1024 * 1024):
+        # Chunk Streaming Engine
+        async for chunk in bot.iter_download(media, offset=start, request_size=512 * 1024):
             if len(chunk) > (end - start + 1):
                 chunk = chunk[: end - start + 1]
             await response.write(chunk)
@@ -84,7 +80,7 @@ async def stream_handler(request):
         return response
 
     except Exception as e:
-        return web.Response(text=f"Streaming Error: {str(e)}", status=500)
+        return web.Response(text=f"VLC Backend Error: {str(e)}", status=500)
 
 
 @bot.on(events.NewMessage)
